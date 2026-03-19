@@ -7,6 +7,6 @@ spring:
     web-application-type: reactive
 
   r2dbc:
-    url: r2dbc:postgresql://localhost:5432/nomad_rates
-    username: postgres
-    password: postgres
+    url: postgresql://nomad_rates_user:ycYCPEpHCFKaQd1GJ4hJXl0j7eOmcfOl@dpg-d6tvpthaae7s73e6uu60-a/nomad_rates
+    username: nomad_rates_user
+    password: ycYCPEpHCFKaQd1GJ4hJXl0j7eOmcfOl
