@@ -1,0 +1,26 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: Nomad Rates Sentinel
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/nomad_rates
+    username: postgres
+    password: postgres
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 3000
+
+  threads:
+    virtual:
+      enabled: true
+
+rates:
+  adapters:
+    nbk:
+      url: https://nationalbank.kz/en/exchangerates/ezhednevnye-oficialnye-rynochnye-kursy-valyut
+    xe:
+      url: https://www.xe.com/currencyconverter/convert/?Amount=1&From=USD&To=KZT
