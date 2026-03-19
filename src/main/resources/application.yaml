@@ -6,7 +6,7 @@ spring:
     name: Nomad Rates Sentinel
 
   datasource:
-    url: jdbc:postgresql://nomad_rates_user:ycYCPEpHCFKaQd1GJ4hJXl0j7eOmcfOl@dpg-d6tvpthaae7s73e6uu60-a/nomad_rates
+    url: jdbc:postgresql://dpg-d6tvpthaae7s73e6uu60-a:5432/nomad_rates
     username: nomad_rates_user
     password: ycYCPEpHCFKaQd1GJ4hJXl0j7eOmcfOl
     hikari:
