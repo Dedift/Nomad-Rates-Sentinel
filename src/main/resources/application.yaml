@@ -26,7 +26,7 @@ spring:
 
 rates:
   adapters:
-    request-timeout-ms: 10000
+    request-timeout-ms: 30000
     nbk:
       url: https://nationalbank.kz/en/exchangerates/ezhednevnye-oficialnye-rynochnye-kursy-valyut
     xe:
