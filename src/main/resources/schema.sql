@@ -13,5 +13,3 @@ CREATE INDEX IF NOT EXISTS idx_currency_rates_code_updated_at
 
 CREATE INDEX IF NOT EXISTS idx_currency_rates_source_updated_at
     ON currency_rates (source_id, updated_at DESC);
-
-CREATE DATABASE nomad_rates;
