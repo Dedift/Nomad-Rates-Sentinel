@@ -7,8 +7,8 @@ import mm.nomadratessentinel.model.CurrencyRate
 import mm.nomadratessentinel.model.ParsedRate
 import mm.nomadratessentinel.model.RateComparison
 import mm.nomadratessentinel.repository.ReactiveCurrencyRateRepository
+import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Profile
-import org.springframework.dao.CannotAcquireLockException
 import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.dao.TransientDataAccessException
@@ -37,13 +37,20 @@ class ReactiveRateSyncService(
         .filter(::isConcurrencyFailure)
 
     fun syncAndCompare(): Flux<RateComparison> {
+        logger.info("Starting reactive sync-and-compare")
         val nbkRates = reactiveNbkRateClient.fetchRates()
             .retryWhen(sourceRetrySpec)
-            .onErrorResume { Flux.empty() }
+            .onErrorResume {
+                logger.warn("Reactive NBK fetch failed", it)
+                Flux.empty()
+            }
 
         val xeRates = reactiveXeRateClient.fetchRates()
             .retryWhen(sourceRetrySpec)
-            .onErrorResume { Flux.empty() }
+            .onErrorResume {
+                logger.warn("Reactive XE fetch failed", it)
+                Flux.empty()
+            }
 
         val pipeline = Mono.zip(
             nbkRates.collectList(),
@@ -56,10 +63,13 @@ class ReactiveRateSyncService(
 
         return transactionalOperator.transactional(pipeline)
             .retryWhen(persistenceRetrySpec)
+            .doOnComplete { logger.info("Finished reactive sync-and-compare") }
     }
 
     fun compare(code: CurrencyCode): Mono<RateComparison> =
         reactiveCurrencyRateRepository.findDeltaBetweenSources(code)
+            .doOnSubscribe { logger.info("Starting reactive compare for {}", code) }
+            .doOnSuccess { logger.info("Reactive compare for {} returned {}", code, if (it == null) "no data" else "a result") }
 
     private fun ParsedRate.toCurrencyRate(): CurrencyRate =
         CurrencyRate(
@@ -71,7 +81,9 @@ class ReactiveRateSyncService(
 
     private fun isConcurrencyFailure(ex: Throwable): Boolean =
         ex is OptimisticLockingFailureException ||
-            ex is PessimisticLockingFailureException ||
-            ex is CannotAcquireLockException ||
-            ex is TransientDataAccessException
+                ex is PessimisticLockingFailureException || ex is TransientDataAccessException
+
+    companion object {
+        private val logger = LoggerFactory.getLogger(ReactiveRateSyncService::class.java)
+    }
 }

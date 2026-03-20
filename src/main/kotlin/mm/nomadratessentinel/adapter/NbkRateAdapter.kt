@@ -15,7 +15,9 @@ import java.util.regex.Pattern
 class NbkRateAdapter(
     @Value($$"${rates.adapters.nbk.url:https://nationalbank.kz/en/exchangerates/ezhednevnye-oficialnye-rynochnye-kursy-valyut}")
     private val url: String,
-) : RateAdapter {
+    @Value($$"${rates.adapters.request-timeout-ms:10000}")
+    private val requestTimeoutMs: Int
+    ) : RateAdapter {
 
     private data class ParsedRow(
         val code: CurrencyCode,
@@ -27,7 +29,12 @@ class NbkRateAdapter(
     private val pairCodePattern = Pattern.compile("^([A-Z]{3})\\s*/\\s*[A-Z]{3}$")
 
     override fun fetchRates(): List<ParsedRate> =
-        parse(Jsoup.connect(url).get())
+        parse(fetchDocument(url))
+
+    protected fun fetchDocument(requestUrl: String): Document =
+        Jsoup.connect(requestUrl)
+            .timeout(requestTimeoutMs)
+            .get()
 
     fun parse(document: Document): List<ParsedRate> =
         document.select("table tbody tr")

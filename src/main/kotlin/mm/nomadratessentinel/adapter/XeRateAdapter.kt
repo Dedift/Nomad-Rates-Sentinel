@@ -14,6 +14,8 @@ import java.util.regex.Pattern
 class XeRateAdapter(
     @Value($$"${rates.adapters.xe.url:https://www.xe.com/currencyconverter/convert/?Amount=1&From=USD&To=KZT}")
     private val url: String,
+    @Value($$"${rates.adapters.request-timeout-ms:10000}")
+    private val requestTimeoutMs: Int
 ) : RateAdapter {
 
     private val jsonRatePattern = Pattern.compile("midMarketRate\\s*[:=]\\s*\"?([0-9]+(?:\\.[0-9]+)?)\"?")
@@ -136,6 +138,8 @@ class XeRateAdapter(
         url.replace(Regex("([?&]From=)[A-Z]{3}", RegexOption.IGNORE_CASE), "$1${from.name}")
             .replace(Regex("([?&]To=)[A-Z]{3}", RegexOption.IGNORE_CASE), "$1${to.name}")
 
-    protected open fun fetchDocument(requestUrl: String): Document =
-        Jsoup.connect(requestUrl).get()
+    protected fun fetchDocument(requestUrl: String): Document =
+        Jsoup.connect(requestUrl)
+            .timeout(requestTimeoutMs)
+            .get()
 }

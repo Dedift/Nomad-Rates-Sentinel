@@ -1,5 +1,5 @@
 server:
-  port: 8081
+  port: ${PORT:8081}
 
 spring:
   sql:
@@ -10,13 +10,15 @@ spring:
     name: Nomad Rates Sentinel
 
   datasource:
-    url: jdbc:postgresql://dpg-d6tvpthaae7s73e6uu60-a:5432/nomad_rates
-    username: nomad_rates_user
-    password: ycYCPEpHCFKaQd1GJ4hJXl0j7eOmcfOl
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://dpg-d6tvpthaae7s73e6uu60-a:5432/nomad_rates?connectTimeout=3&socketTimeout=10&tcpKeepAlive=true}
+    username: ${SPRING_DATASOURCE_USERNAME:nomad_rates_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:ycYCPEpHCFKaQd1GJ4hJXl0j7eOmcfOl}
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
       connection-timeout: 3000
+      validation-timeout: 2000
+      initialization-fail-timeout: 5000
 
   threads:
     virtual:
@@ -24,6 +26,7 @@ spring:
 
 rates:
   adapters:
+    request-timeout-ms: 10000
     nbk:
       url: https://nationalbank.kz/en/exchangerates/ezhednevnye-oficialnye-rynochnye-kursy-valyut
     xe:
