@@ -48,20 +48,37 @@ class RateSyncService(
         Executors.newVirtualThreadPerTaskExecutor().use { executor ->
             val nbkFuture = executor.submit(Callable { nbkRateAdapter.fetchRates() })
             val xeFuture = executor.submit(Callable { xeRateAdapter.fetchRates() })
+            val sourceResults = listOf(
+                awaitSource("NBK", nbkFuture),
+                awaitSource("XE", xeFuture),
+            )
 
-            awaitSource("NBK", nbkFuture) + awaitSource("XE", xeFuture)
+            val successfulRates = sourceResults
+                .filterIsInstance<SourceFetchResult.Success>()
+                .flatMap { it.rates }
+
+            if (successfulRates.isEmpty()) {
+                val failedSources = sourceResults
+                    .filterIsInstance<SourceFetchResult.Failure>()
+                    .joinToString(", ") { it.source }
+                throw ExternalSourceFetchException("all sources ($failedSources)", IllegalStateException("No sources responded successfully"))
+            }
+
+            successfulRates
         }
 
-    private fun awaitSource(source: String, future: Future<List<ParsedRate>>): List<ParsedRate> =
+    private fun awaitSource(source: String, future: Future<List<ParsedRate>>): SourceFetchResult =
         try {
-            future.get(requestTimeoutMs.toLong() + FUTURE_WAIT_BUFFER_MS, TimeUnit.MILLISECONDS)
+            val rates = future.get(requestTimeoutMs.toLong() + FUTURE_WAIT_BUFFER_MS, TimeUnit.MILLISECONDS)
+            logger.info("Fetched {} rates from {}", rates.size, source)
+            SourceFetchResult.Success(source, rates)
         } catch (ex: TimeoutException) {
             future.cancel(true)
-            logger.error("Timed out while fetching rates from {}", source, ex)
-            throw ExternalSourceTimeoutException(source, requestTimeoutMs, ex)
+            logger.warn("Timed out while fetching rates from {}", source, ex)
+            SourceFetchResult.Failure(source, ExternalSourceTimeoutException(source, requestTimeoutMs, ex))
         } catch (ex: Exception) {
-            logger.error("Failed to fetch rates from {}", source, ex)
-            throw ExternalSourceFetchException(source, ex)
+            logger.warn("Failed to fetch rates from {}", source, ex)
+            SourceFetchResult.Failure(source, ExternalSourceFetchException(source, ex))
         }
 
     private fun persistWithRetry(currencyRates: List<CurrencyRate>): List<RateComparison> {
@@ -118,3 +135,17 @@ class ExternalSourceFetchException(
     source: String,
     cause: Throwable,
 ) : RuntimeException("Failed to fetch rates from $source", cause)
+
+sealed interface SourceFetchResult {
+    val source: String
+
+    data class Success(
+        override val source: String,
+        val rates: List<ParsedRate>,
+    ) : SourceFetchResult
+
+    data class Failure(
+        override val source: String,
+        val cause: RuntimeException,
+    ) : SourceFetchResult
+}
