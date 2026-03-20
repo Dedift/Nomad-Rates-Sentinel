@@ -17,13 +17,12 @@ import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 import java.time.Duration
 import java.util.concurrent.Callable
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.CompletionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 @Service
 class RateSyncService(
@@ -36,26 +35,28 @@ class RateSyncService(
     @Value($$"${rates.cache.sync-ttl:30s}")
     private val cacheTtl: Duration,
 ) {
+    private val syncLock = ReentrantLock()
     @Volatile
     private var cachedSyncResult: CachedSyncResult? = null
-    private val inFlightSync = AtomicReference<CompletableFuture<List<RateComparison>>?>()
 
     fun syncAndCompare(): List<RateComparison> {
-        while (true) {
+        cachedSyncResult?.takeIf { !it.isExpired() }?.let {
+            logger.info("Returning cached sync-and-compare result with {} compared rates", it.result.size)
+            return it.result
+        }
+
+        return syncLock.withLock {
             cachedSyncResult?.takeIf { !it.isExpired() }?.let {
-                logger.info("Returning cached sync-and-compare result with {} compared rates", it.result.size)
-                return it.result
+                logger.info("Returning cached sync-and-compare result with {} compared rates after waiting", it.result.size)
+                return@withLock it.result
             }
 
-            inFlightSync.get()?.let {
-                logger.info("Joining in-flight sync-and-compare request")
-                return awaitInFlightSync(it)
-            }
-
-            val newInFlight = CompletableFuture<List<RateComparison>>()
-            if (inFlightSync.compareAndSet(null, newInFlight)) {
-                return runSync(newInFlight)
-            }
+            logger.info("Starting sync-and-compare")
+            val parsedRates = fetchRatesConcurrently()
+            val result = persistWithRetry(parsedRates.map { it.toCurrencyRate() })
+            cachedSyncResult = CachedSyncResult(result, Instant.now().plus(cacheTtl))
+            logger.info("Finished sync-and-compare with {} compared rates", result.size)
+            result
         }
     }
 
@@ -85,35 +86,6 @@ class RateSyncService(
             }
 
             successfulRates
-        }
-
-    private fun runSync(inFlight: CompletableFuture<List<RateComparison>>): List<RateComparison> =
-        try {
-            cachedSyncResult?.takeIf { !it.isExpired() }?.let {
-                logger.info("Returning cached sync-and-compare result with {} compared rates after winning sync slot", it.result.size)
-                inFlight.complete(it.result)
-                return it.result
-            }
-
-            logger.info("Starting sync-and-compare")
-            val parsedRates = fetchRatesConcurrently()
-            val result = persistWithRetry(parsedRates.map { it.toCurrencyRate() })
-            cachedSyncResult = CachedSyncResult(result, Instant.now().plus(cacheTtl))
-            logger.info("Finished sync-and-compare with {} compared rates", result.size)
-            inFlight.complete(result)
-            result
-        } catch (ex: Exception) {
-            inFlight.completeExceptionally(ex)
-            throw ex
-        } finally {
-            inFlightSync.compareAndSet(inFlight, null)
-        }
-
-    private fun awaitInFlightSync(inFlight: CompletableFuture<List<RateComparison>>): List<RateComparison> =
-        try {
-            inFlight.join()
-        } catch (ex: CompletionException) {
-            throw (ex.cause as? RuntimeException) ?: RuntimeException(ex.cause ?: ex)
         }
 
     private fun awaitSource(source: String, future: Future<List<ParsedRate>>): SourceFetchResult =

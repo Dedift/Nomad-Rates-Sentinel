@@ -18,40 +18,11 @@ class ReactiveCurrencyRateRepository(
     private val databaseClient: DatabaseClient,
 ) {
 
-    fun saveAll(currencyRates: Collection<CurrencyRate>): Flux<CurrencyRate> {
-        val rates = currencyRates.toList()
-        if (rates.isEmpty()) {
-            return Flux.empty()
-        }
+    fun save(currencyRate: CurrencyRate): Mono<CurrencyRate> =
+        upsert(currencyRate)
 
-        return databaseClient.inConnectionMany { connection ->
-            val statement = connection.createStatement(
-                """
-                INSERT INTO currency_rates (code, rate, source_id, updated_at, version)
-                VALUES ($1, $2, $3, $4, 0)
-                ON CONFLICT (code, source_id) DO UPDATE
-                SET rate = EXCLUDED.rate,
-                    updated_at = EXCLUDED.updated_at,
-                    version = currency_rates.version + 1
-                """.trimIndent()
-            )
-
-            rates.forEachIndexed { index, currencyRate ->
-                statement
-                    .bind("$1", currencyRate.code.name)
-                    .bind("$2", currencyRate.rate)
-                    .bind("$3", currencyRate.source.name)
-                    .bind("$4", currencyRate.updatedAt)
-
-                if (index < rates.lastIndex) {
-                    statement.add()
-                }
-            }
-
-            Flux.from(statement.execute())
-                .flatMap { result -> result.rowsUpdated }
-        }.thenMany(Flux.fromIterable(rates))
-    }
+    fun saveAll(currencyRates: Collection<CurrencyRate>): Flux<CurrencyRate> =
+        Flux.fromIterable(currencyRates).concatMap(::save)
 
     fun findDeltaBetweenSources(code: CurrencyCode): Mono<RateComparison> =
         databaseClient.sql(
@@ -114,4 +85,31 @@ class ReactiveCurrencyRateRepository(
             }
             .all()
 
+    private fun upsert(currencyRate: CurrencyRate): Mono<CurrencyRate> =
+        databaseClient.sql(
+            """
+            INSERT INTO currency_rates (code, rate, source_id, updated_at, version)
+            VALUES (:code, :rate, :sourceId, :updatedAt, 0)
+            ON CONFLICT (code, source_id) DO UPDATE
+            SET rate = EXCLUDED.rate,
+                updated_at = EXCLUDED.updated_at,
+                version = currency_rates.version + 1
+            RETURNING code, rate, source_id, updated_at, version
+            """.trimIndent()
+        )
+            .bind("code", currencyRate.code.name)
+            .bind("rate", currencyRate.rate)
+            .bind("sourceId", currencyRate.source.name)
+            .bind("updatedAt", currencyRate.updatedAt)
+            .map { row, _ ->
+                CurrencyRate(
+                    code = CurrencyCode.valueOf(row.get("code", String::class.java)!!),
+                    rate = row.get("rate", BigDecimal::class.java)!!,
+                    source = RateSource.valueOf(row.get("source_id", String::class.java)!!),
+                    updatedAt = row.get("updated_at", Instant::class.java)!!,
+                    version = row.get("version", Long::class.java)!!,
+                )
+            }
+            .one()
+            .switchIfEmpty(Mono.error(IllegalStateException("Failed to upsert rate for ${currencyRate.code}/${currencyRate.source}")))
 }

@@ -7,7 +7,6 @@ import mm.nomadratessentinel.model.RateSource
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.stereotype.Repository
-import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Timestamp
 import java.time.Instant
@@ -18,8 +17,11 @@ class CurrencyRateRepository(
     private val jdbcTemplate: JdbcTemplate,
 ) {
 
+    fun save(currencyRate: CurrencyRate): CurrencyRate =
+        upsert(currencyRate)
+
     fun saveAll(currencyRates: Collection<CurrencyRate>): List<CurrencyRate> =
-        currencyRates.toList().also(::batchUpsert)
+        currencyRates.map(::save)
 
     fun findDeltaBetweenSources(code: CurrencyCode): RateComparison? =
         jdbcTemplate.query(
@@ -64,12 +66,8 @@ class CurrencyRateRepository(
             RateSource.XE.name,
         )
 
-    private fun batchUpsert(currencyRates: List<CurrencyRate>) {
-        if (currencyRates.isEmpty()) {
-            return
-        }
-
-        jdbcTemplate.batchUpdate(
+    private fun upsert(currencyRate: CurrencyRate): CurrencyRate {
+        val persistedRate = jdbcTemplate.queryForObject(
             """
             INSERT INTO currency_rates (code, rate, source_id, updated_at, version)
             VALUES (?, ?, ?, ?, 0)
@@ -77,15 +75,26 @@ class CurrencyRateRepository(
             SET rate = EXCLUDED.rate,
                 updated_at = EXCLUDED.updated_at,
                 version = currency_rates.version + 1
+            RETURNING code, rate, source_id, updated_at, version
             """.trimIndent(),
-            currencyRates,
-            currencyRates.size,
-        ) { ps: PreparedStatement, currencyRate: CurrencyRate ->
-            ps.setString(1, currencyRate.code.name)
-            ps.setBigDecimal(2, currencyRate.rate)
-            ps.setString(3, currencyRate.source.name)
-            ps.setTimestamp(4, Timestamp.from(currencyRate.updatedAt))
-        }
+            rowMapper,
+            currencyRate.code.name,
+            currencyRate.rate,
+            currencyRate.source.name,
+            Timestamp.from(currencyRate.updatedAt),
+        )
+
+        return persistedRate
+    }
+
+    private val rowMapper = RowMapper { rs: ResultSet, _: Int ->
+        CurrencyRate(
+            code = CurrencyCode.valueOf(rs.getString("code")),
+            rate = rs.getBigDecimal("rate"),
+            source = RateSource.valueOf(rs.getString("source_id")),
+            updatedAt = rs.getTimestamp("updated_at").toInstant(),
+            version = rs.getLong("version"),
+        )
     }
 
     private val comparisonRowMapper = RowMapper { rs: ResultSet, _: Int ->
