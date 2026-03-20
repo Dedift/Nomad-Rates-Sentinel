@@ -39,7 +39,7 @@ class RateAdaptersTest {
             """.trimIndent()
         )
 
-        val rates = NbkRateAdapter("https://example.test").parse(document)
+        val rates = NbkRateAdapter("https://example.test", 10_000).parse(document)
 
         assertEquals(2, rates.size)
         assertEquals(CurrencyCode.USD, rates[0].code)
@@ -69,7 +69,7 @@ class RateAdaptersTest {
             "https://www.xe.com/currencyconverter/convert/?Amount=1&From=USD&To=KZT"
         )
 
-        val rates = XeRateAdapter("https://example.test").parse(document)
+        val rates = XeRateAdapter("https://example.test", 10_000).parse(document)
 
         assertEquals(1, rates.size)
         assertEquals(CurrencyCode.USD, rates.single().code)
@@ -93,7 +93,7 @@ class RateAdaptersTest {
             "https://www.xe.com/currencyconverter/convert/?Amount=1&From=USD&To=KZT"
         )
 
-        val rates = XeRateAdapter("https://example.test").parse(document)
+        val rates = XeRateAdapter("https://example.test", 10_000).parse(document)
 
         assertEquals(1, rates.size)
         assertEquals(CurrencyCode.USD, rates.single().code)
@@ -102,7 +102,7 @@ class RateAdaptersTest {
 
     @Test
     fun `xe adapter fetches configured currency set against target currency`() {
-        val adapter = object : XeRateAdapter("https://www.xe.com/currencyconverter/convert/?Amount=1&From=USD&To=KZT") {
+        val adapter = object : XeRateAdapter("https://www.xe.com/currencyconverter/convert/?Amount=1&From=USD&To=KZT", 10_000) {
             override fun fetchDocument(requestUrl: String): Document =
                 when {
                     requestUrl.contains("From=USD") -> xeDocument("USD", "480.10")

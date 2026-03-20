@@ -8,6 +8,8 @@ import org.jsoup.nodes.Document
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import java.util.regex.Pattern
 
 @Component
@@ -28,21 +30,28 @@ class XeRateAdapter(
     override fun fetchRates(): List<ParsedRate> {
         val configuredPair = extractPair(url) ?: return emptyList()
         val target = configuredPair.second
+        val targetRate = ParsedRate(
+            code = target,
+            nominal = 1,
+            rate = BigDecimal.ONE,
+            source = RateSource.XE,
+        )
 
-        return CurrencyCode.entries.mapNotNull { source ->
-            if (source == target) {
-                return@mapNotNull ParsedRate(
-                    code = source,
-                    nominal = 1,
-                    rate = BigDecimal.ONE,
-                    source = RateSource.XE,
-                )
-            }
-
-            val requestUrl = buildUrl(source, target)
-            val document = fetchDocument(requestUrl)
-            parse(document).firstOrNull()
+        val fetchedRates = Executors.newVirtualThreadPerTaskExecutor().use { executor ->
+            CurrencyCode.entries
+                .filterNot { it == target }
+                .map { source ->
+                    executor.submit(Callable {
+                        val requestUrl = buildUrl(source, target)
+                        val document = fetchDocument(requestUrl)
+                        parse(document).firstOrNull()
+                    })
+                }
+                .mapNotNull { it.get() }
         }
+
+        return (fetchedRates + targetRate)
+            .sortedBy { CurrencyCode.entries.indexOf(it.code) }
     }
 
     fun parse(document: Document): List<ParsedRate> {
