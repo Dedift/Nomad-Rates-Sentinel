@@ -31,3 +31,5 @@ rates:
       url: https://nationalbank.kz/en/exchangerates/ezhednevnye-oficialnye-rynochnye-kursy-valyut
     xe:
       url: https://www.xe.com/currencyconverter/convert/?Amount=1&From=USD&To=KZT
+  cache:
+    sync-ttl: ${RATES_CACHE_SYNC_TTL:30s}

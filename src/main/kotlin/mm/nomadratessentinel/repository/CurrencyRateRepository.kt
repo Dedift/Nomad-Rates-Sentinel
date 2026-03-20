@@ -4,7 +4,6 @@ import mm.nomadratessentinel.model.CurrencyCode
 import mm.nomadratessentinel.model.CurrencyRate
 import mm.nomadratessentinel.model.RateComparison
 import mm.nomadratessentinel.model.RateSource
-import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.stereotype.Repository
@@ -19,36 +18,10 @@ class CurrencyRateRepository(
 ) {
 
     fun save(currencyRate: CurrencyRate): CurrencyRate =
-        findByCodeAndSource(currencyRate.code, currencyRate.source)
-            ?.let { update(currencyRate.copy(version = it.version)) }
-            ?: insert(currencyRate)
+        upsert(currencyRate)
 
     fun saveAll(currencyRates: Collection<CurrencyRate>): List<CurrencyRate> =
         currencyRates.map(::save)
-
-    fun findByCodeAndSource(code: CurrencyCode, source: RateSource): CurrencyRate? =
-        jdbcTemplate.query(
-            """
-            SELECT code, rate, source_id, updated_at, version
-            FROM currency_rates
-            WHERE code = ? AND source_id = ?
-            """.trimIndent(),
-            rowMapper,
-            code.name,
-            source.name,
-        ).firstOrNull()
-
-    fun findAllByCode(code: CurrencyCode): List<CurrencyRate> =
-        jdbcTemplate.query(
-            """
-            SELECT code, rate, source_id, updated_at, version
-            FROM currency_rates
-            WHERE code = ?
-            ORDER BY updated_at DESC
-            """.trimIndent(),
-            rowMapper,
-            code.name,
-        )
 
     fun findDeltaBetweenSources(code: CurrencyCode): RateComparison? =
         jdbcTemplate.query(
@@ -93,48 +66,25 @@ class CurrencyRateRepository(
             RateSource.XE.name,
         )
 
-    private fun insert(currencyRate: CurrencyRate): CurrencyRate {
-        val persistedRate = currencyRate.copy(version = 0)
-        val inserted = jdbcTemplate.update(
+    private fun upsert(currencyRate: CurrencyRate): CurrencyRate {
+        val persistedRate = jdbcTemplate.queryForObject(
             """
             INSERT INTO currency_rates (code, rate, source_id, updated_at, version)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 0)
+            ON CONFLICT (code, source_id) DO UPDATE
+            SET rate = EXCLUDED.rate,
+                updated_at = EXCLUDED.updated_at,
+                version = currency_rates.version + 1
+            RETURNING code, rate, source_id, updated_at, version
             """.trimIndent(),
-            persistedRate.code.name,
-            persistedRate.rate,
-            persistedRate.source.name,
-            Timestamp.from(persistedRate.updatedAt),
-            persistedRate.version,
+            rowMapper,
+            currencyRate.code.name,
+            currencyRate.rate,
+            currencyRate.source.name,
+            Timestamp.from(currencyRate.updatedAt),
         )
 
-        check(inserted == 1) { "Failed to insert rate for ${persistedRate.code} from ${persistedRate.source}" }
         return persistedRate
-    }
-
-    private fun update(currencyRate: CurrencyRate): CurrencyRate {
-        val nextVersion = currencyRate.version + 1
-        val updatedRate = currencyRate.copy(version = nextVersion)
-        val updated = jdbcTemplate.update(
-            """
-            UPDATE currency_rates
-            SET rate = ?, updated_at = ?, version = ?
-            WHERE code = ? AND source_id = ? AND version = ?
-            """.trimIndent(),
-            updatedRate.rate,
-            Timestamp.from(updatedRate.updatedAt),
-            updatedRate.version,
-            updatedRate.code.name,
-            updatedRate.source.name,
-            currencyRate.version,
-        )
-
-        if (updated == 0) {
-            throw OptimisticLockingFailureException(
-                "Currency rate for ${currencyRate.code}/${currencyRate.source} was modified concurrently"
-            )
-        }
-
-        return updatedRate
     }
 
     private val rowMapper = RowMapper { rs: ResultSet, _: Int ->

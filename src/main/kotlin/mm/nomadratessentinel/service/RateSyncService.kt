@@ -15,11 +15,14 @@ import org.springframework.dao.TransientDataAccessException
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
+import java.time.Duration
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 @Service
 class RateSyncService(
@@ -29,14 +32,32 @@ class RateSyncService(
     private val transactionTemplate: TransactionTemplate,
     @Value($$"${rates.adapters.request-timeout-ms:10000}")
     private val requestTimeoutMs: Int,
+    @Value($$"${rates.cache.sync-ttl:30s}")
+    private val cacheTtl: Duration,
 ) {
+    private val syncLock = ReentrantLock()
+    @Volatile
+    private var cachedSyncResult: CachedSyncResult? = null
 
     fun syncAndCompare(): List<RateComparison> {
-        logger.info("Starting sync-and-compare")
-        val parsedRates = fetchRatesConcurrently()
-        val result = persistWithRetry(parsedRates.map { it.toCurrencyRate() })
-        logger.info("Finished sync-and-compare with {} compared rates", result.size)
-        return result
+        cachedSyncResult?.takeIf { !it.isExpired() }?.let {
+            logger.info("Returning cached sync-and-compare result with {} compared rates", it.result.size)
+            return it.result
+        }
+
+        return syncLock.withLock {
+            cachedSyncResult?.takeIf { !it.isExpired() }?.let {
+                logger.info("Returning cached sync-and-compare result with {} compared rates after waiting", it.result.size)
+                return@withLock it.result
+            }
+
+            logger.info("Starting sync-and-compare")
+            val parsedRates = fetchRatesConcurrently()
+            val result = persistWithRetry(parsedRates.map { it.toCurrencyRate() })
+            cachedSyncResult = CachedSyncResult(result, Instant.now().plus(cacheTtl))
+            logger.info("Finished sync-and-compare with {} compared rates", result.size)
+            result
+        }
     }
 
     fun compare(code: CurrencyCode): RateComparison? =
@@ -148,4 +169,12 @@ sealed interface SourceFetchResult {
         override val source: String,
         val cause: RuntimeException,
     ) : SourceFetchResult
+}
+
+private data class CachedSyncResult(
+    val result: List<RateComparison>,
+    val expiresAt: Instant,
+) {
+    fun isExpired(now: Instant = Instant.now()): Boolean =
+        !expiresAt.isAfter(now)
 }
