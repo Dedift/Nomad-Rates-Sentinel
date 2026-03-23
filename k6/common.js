@@ -24,6 +24,7 @@ export function postSync() {
 export function getCompare(code) {
   const response = http.get(`${BASE_URL}/compare/${code}`, {
     tags: { endpoint: 'compare', method: 'GET', code },
+    responseCallback: http.expectedStatuses(200, 404),
   });
 
   check(response, {
