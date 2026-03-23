@@ -32,4 +32,4 @@ rates:
     xe:
       url: https://www.xe.com/currencyconverter/convert/?Amount=1&From=USD&To=KZT
   cache:
-    sync-ttl: ${RATES_CACHE_SYNC_TTL:30s}
+    sync-ttl: ${RATES_CACHE_SYNC_TTL:0s}
