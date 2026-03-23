@@ -16,10 +16,13 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 import java.util.concurrent.Callable
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.system.measureTimeMillis
 
 @Service
@@ -31,22 +34,54 @@ class RateSyncService(
     @Value($$"${rates.adapters.request-timeout-ms:10000}")
     private val requestTimeoutMs: Int,
 ) {
-    fun syncAndCompare(): List<RateComparison> {
-        logger.info("Starting sync-and-compare")
-        var parsedRates: List<ParsedRate>
-        val fetchMs = measureTimeMillis {
-            parsedRates = fetchRatesConcurrently()
-        }
-        logger.info("Fetched {} rates across sources in {} ms", parsedRates.size, fetchMs)
+    private val inFlightSync = AtomicReference<CompletableFuture<List<RateComparison>>?>()
 
-        var result: List<RateComparison>
-        val persistMs = measureTimeMillis {
-            result = persistWithRetry(parsedRates.map { it.toCurrencyRate() })
+    fun syncAndCompare(): List<RateComparison> {
+        inFlightSync.get()?.let {
+            logger.info("Joining in-flight sync-and-compare")
+            return awaitInFlightSync(it)
         }
-        logger.info("Persisted {} parsed rates and loaded {} comparisons in {} ms", parsedRates.size, result.size, persistMs)
-        logger.info("Finished sync-and-compare with {} compared rates", result.size)
-        return result
+
+        val newInFlight = CompletableFuture<List<RateComparison>>()
+        if (!inFlightSync.compareAndSet(null, newInFlight)) {
+            logger.info("Joining in-flight sync-and-compare after race")
+            return awaitInFlightSync(inFlightSync.get()!!)
+        }
+
+        return runSync(newInFlight)
     }
+
+    private fun runSync(inFlight: CompletableFuture<List<RateComparison>>): List<RateComparison> {
+        logger.info("Starting sync-and-compare")
+        try {
+            var parsedRates: List<ParsedRate>
+            val fetchMs = measureTimeMillis {
+                parsedRates = fetchRatesConcurrently()
+            }
+            logger.info("Fetched {} rates across sources in {} ms", parsedRates.size, fetchMs)
+
+            var result: List<RateComparison>
+            val persistMs = measureTimeMillis {
+                result = persistWithRetry(parsedRates.map { it.toCurrencyRate() })
+            }
+            logger.info("Persisted {} parsed rates and loaded {} comparisons in {} ms", parsedRates.size, result.size, persistMs)
+            logger.info("Finished sync-and-compare with {} compared rates", result.size)
+            inFlight.complete(result)
+            return result
+        } catch (ex: Exception) {
+            inFlight.completeExceptionally(ex)
+            throw ex
+        } finally {
+            inFlightSync.compareAndSet(inFlight, null)
+        }
+    }
+
+    private fun awaitInFlightSync(inFlight: CompletableFuture<List<RateComparison>>): List<RateComparison> =
+        try {
+            inFlight.join()
+        } catch (ex: CompletionException) {
+            throw (ex.cause as? RuntimeException) ?: RuntimeException(ex.cause ?: ex)
+        }
 
     fun compare(code: CurrencyCode): RateComparison? =
         currencyRateRepository.findDeltaBetweenSources(code).also {
