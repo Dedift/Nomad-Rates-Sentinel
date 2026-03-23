@@ -5,12 +5,14 @@ import mm.nomadratessentinel.model.ParsedRate
 import mm.nomadratessentinel.model.RateSource
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.regex.Pattern
+import kotlin.system.measureTimeMillis
 
 @Component
 class XeRateAdapter(
@@ -37,21 +39,31 @@ class XeRateAdapter(
             source = RateSource.XE,
         )
 
-        val fetchedRates = Executors.newVirtualThreadPerTaskExecutor().use { executor ->
-            CurrencyCode.entries
-                .filterNot { it == target }
-                .map { source ->
-                    executor.submit(Callable {
-                        val requestUrl = buildUrl(source, target)
-                        val document = fetchDocument(requestUrl)
-                        parse(document).firstOrNull()
-                    })
-                }
-                .mapNotNull { it.get() }
+        lateinit var fetchedRates: List<ParsedRate>
+        val elapsedMs = measureTimeMillis {
+            fetchedRates = Executors.newVirtualThreadPerTaskExecutor().use { executor ->
+                CurrencyCode.entries
+                    .filterNot { it == target }
+                    .map { source ->
+                        executor.submit(Callable {
+                            val requestUrl = buildUrl(source, target)
+                            var parsedRate: ParsedRate?
+                            val requestMs = measureTimeMillis {
+                                val document = fetchDocument(requestUrl)
+                                parsedRate = parse(document).firstOrNull()
+                            }
+                            logger.info("XE fetch for {} -> {} completed in {} ms", source, target, requestMs)
+                            parsedRate
+                        })
+                    }
+                    .mapNotNull { it.get() }
+            }
         }
 
-        return (fetchedRates + targetRate)
+        val result = (fetchedRates + targetRate)
             .sortedBy { CurrencyCode.entries.indexOf(it.code) }
+        logger.info("XE fetch completed with {} rates in {} ms", result.size, elapsedMs)
+        return result
     }
 
     fun parse(document: Document): List<ParsedRate> {
@@ -151,4 +163,8 @@ class XeRateAdapter(
         Jsoup.connect(requestUrl)
             .timeout(requestTimeoutMs)
             .get()
+
+    companion object {
+        private val logger = LoggerFactory.getLogger(XeRateAdapter::class.java)
+    }
 }

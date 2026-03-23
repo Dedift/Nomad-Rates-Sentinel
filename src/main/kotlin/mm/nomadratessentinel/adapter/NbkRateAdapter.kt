@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.regex.Pattern
+import kotlin.system.measureTimeMillis
+import org.slf4j.LoggerFactory
 
 @Component
 class NbkRateAdapter(
@@ -17,7 +19,7 @@ class NbkRateAdapter(
     private val url: String,
     @Value($$"${rates.adapters.request-timeout-ms:10000}")
     private val requestTimeoutMs: Int
-    ) : RateAdapter {
+) : RateAdapter {
 
     private data class ParsedRow(
         val code: CurrencyCode,
@@ -28,8 +30,14 @@ class NbkRateAdapter(
     private val leadingNominalPattern = Pattern.compile("^(\\d+)\\b")
     private val pairCodePattern = Pattern.compile("^([A-Z]{3})\\s*/\\s*[A-Z]{3}$")
 
-    override fun fetchRates(): List<ParsedRate> =
-        parse(fetchDocument(url))
+    override fun fetchRates(): List<ParsedRate> {
+        lateinit var rates: List<ParsedRate>
+        val elapsedMs = measureTimeMillis {
+            rates = parse(fetchDocument(url))
+        }
+        logger.info("NBK fetch completed with {} rates in {} ms", rates.size, elapsedMs)
+        return rates
+    }
 
     protected fun fetchDocument(requestUrl: String): Document =
         Jsoup.connect(requestUrl)
@@ -87,4 +95,8 @@ class NbkRateAdapter(
             .replace(",", ".")
             .takeIf { candidate -> candidate.any { it.isDigit() } }
             ?.toBigDecimalOrNull()
+
+    companion object {
+        private val logger = LoggerFactory.getLogger(NbkRateAdapter::class.java)
+    }
 }

@@ -23,6 +23,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlin.system.measureTimeMillis
 
 @Service
 class RateSyncService(
@@ -52,8 +53,17 @@ class RateSyncService(
             }
 
             logger.info("Starting sync-and-compare")
-            val parsedRates = fetchRatesConcurrently()
-            val result = persistWithRetry(parsedRates.map { it.toCurrencyRate() })
+            var parsedRates: List<ParsedRate>
+            val fetchMs = measureTimeMillis {
+                parsedRates = fetchRatesConcurrently()
+            }
+            logger.info("Fetched {} rates across sources in {} ms", parsedRates.size, fetchMs)
+
+            var result: List<RateComparison>
+            val persistMs = measureTimeMillis {
+                result = persistWithRetry(parsedRates.map { it.toCurrencyRate() })
+            }
+            logger.info("Persisted {} parsed rates and loaded {} comparisons in {} ms", parsedRates.size, result.size, persistMs)
             cachedSyncResult = CachedSyncResult(result, Instant.now().plus(cacheTtl))
             logger.info("Finished sync-and-compare with {} compared rates", result.size)
             result
