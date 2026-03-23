@@ -8,7 +8,6 @@ import mm.nomadratessentinel.model.ParsedRate
 import mm.nomadratessentinel.model.RateComparison
 import mm.nomadratessentinel.repository.ReactiveCurrencyRateRepository
 import org.slf4j.LoggerFactory
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Profile
 import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.dao.PessimisticLockingFailureException
@@ -21,7 +20,6 @@ import reactor.core.publisher.Mono
 import reactor.util.retry.Retry
 import java.time.Duration
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicReference
 
 @Service
 @Profile("reactive")
@@ -30,12 +28,8 @@ class ReactiveRateSyncService(
     private val reactiveXeRateClient: ReactiveXeRateClient,
     private val reactiveCurrencyRateRepository: ReactiveCurrencyRateRepository,
     transactionManager: R2dbcTransactionManager,
-    @Value($$"${rates.cache.sync-ttl:30s}")
-    private val cacheTtl: Duration,
 ) {
     private val transactionalOperator = TransactionalOperator.create(transactionManager)
-    private val cachedSyncResult = AtomicReference<ReactiveCachedSyncResult?>()
-    private val inFlightSync = AtomicReference<Mono<List<RateComparison>>?>()
     private val sourceRetrySpec = Retry.backoff(3, Duration.ofMillis(300))
         .maxBackoff(Duration.ofSeconds(3))
     private val persistenceRetrySpec = Retry.backoff(3, Duration.ofMillis(200))
@@ -43,40 +37,6 @@ class ReactiveRateSyncService(
         .filter(::isConcurrencyFailure)
 
     fun syncAndCompare(): Flux<RateComparison> {
-        cachedSyncResult.get()?.takeIf { !it.isExpired() }?.let {
-            logger.info("Returning cached reactive sync-and-compare result with {} compared rates", it.result.size)
-            return Flux.fromIterable(it.result)
-        }
-
-        val runningSync = inFlightSync.updateAndGet { current ->
-            current ?: buildSyncMono()
-        }!!
-
-        return runningSync.flatMapMany { Flux.fromIterable(it) }
-    }
-
-    fun compare(code: CurrencyCode): Mono<RateComparison> =
-        reactiveCurrencyRateRepository.findDeltaBetweenSources(code)
-            .doOnSubscribe { logger.info("Starting reactive compare for {}", code) }
-            .doOnSuccess { logger.info("Reactive compare for {} returned {}", code, if (it == null) "no data" else "a result") }
-
-    private fun ParsedRate.toCurrencyRate(): CurrencyRate =
-        CurrencyRate(
-            code = code,
-            rate = rate,
-            source = source,
-            updatedAt = Instant.now(),
-        )
-
-    private fun isConcurrencyFailure(ex: Throwable): Boolean =
-        ex is OptimisticLockingFailureException ||
-                ex is PessimisticLockingFailureException || ex is TransientDataAccessException
-
-    companion object {
-        private val logger = LoggerFactory.getLogger(ReactiveRateSyncService::class.java)
-    }
-
-    private fun buildSyncMono(): Mono<List<RateComparison>> {
         logger.info("Starting reactive sync-and-compare")
         val nbkRates = reactiveNbkRateClient.fetchRates()
             .retryWhen(sourceRetrySpec)
@@ -103,20 +63,27 @@ class ReactiveRateSyncService(
 
         return transactionalOperator.transactional(pipeline)
             .retryWhen(persistenceRetrySpec)
-            .collectList()
-            .doOnNext {
-                cachedSyncResult.set(ReactiveCachedSyncResult(it, Instant.now().plus(cacheTtl)))
-                logger.info("Finished reactive sync-and-compare with {} compared rates", it.size)
-            }
-            .doFinally { inFlightSync.set(null) }
-            .cache()
+            .doOnComplete { logger.info("Finished reactive sync-and-compare") }
     }
-}
 
-private data class ReactiveCachedSyncResult(
-    val result: List<RateComparison>,
-    val expiresAt: Instant,
-) {
-    fun isExpired(now: Instant = Instant.now()): Boolean =
-        !expiresAt.isAfter(now)
+    fun compare(code: CurrencyCode): Mono<RateComparison> =
+        reactiveCurrencyRateRepository.findDeltaBetweenSources(code)
+            .doOnSubscribe { logger.info("Starting reactive compare for {}", code) }
+            .doOnSuccess { logger.info("Reactive compare for {} returned {}", code, if (it == null) "no data" else "a result") }
+
+    private fun ParsedRate.toCurrencyRate(): CurrencyRate =
+        CurrencyRate(
+            code = code,
+            rate = rate,
+            source = source,
+            updatedAt = Instant.now(),
+        )
+
+    private fun isConcurrencyFailure(ex: Throwable): Boolean =
+        ex is OptimisticLockingFailureException ||
+                ex is PessimisticLockingFailureException || ex is TransientDataAccessException
+
+    companion object {
+        private val logger = LoggerFactory.getLogger(ReactiveRateSyncService::class.java)
+    }
 }
